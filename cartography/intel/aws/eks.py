@@ -25,6 +25,25 @@ def get_eks_clusters(boto3_session: boto3.session.Session, region: str) -> List[
 
 
 @timeit
+@aws_handle_regions
+def get_eks_nodegroups(boto3_session: boto3.session.Session, region: str, cluster_name) -> List[Dict]:
+    client = boto3_session.client('eks', region_name=region)
+    nodegroups: List[Dict] = []
+    paginator = client.get_paginator('list_nodegroups')
+    operation_parameters = {'clusterName': cluster_name}
+    for page in paginator.paginate(**operation_parameters):
+        nodegroups.extend(page['nodegroups'])
+    return nodegroups
+
+
+@timeit
+def get_eks_describe_nodegroup(boto3_session: boto3.session.Session, region: str, cluster_name: str, nodegroup_name: str) -> Dict:
+    client = boto3_session.client('eks', region_name=region)
+    response = client.describe_nodegroup(clusterName=cluster_name, nodegroupName=nodegroup_name)
+    return response['nodegroup']
+
+
+@timeit
 def get_eks_describe_cluster(boto3_session: boto3.session.Session, region: str, cluster_name: str) -> Dict:
     client = boto3_session.client('eks', region_name=region)
     response = client.describe_cluster(name=cluster_name)
@@ -78,6 +97,46 @@ def load_eks_clusters(
         )
 
 
+@timeit
+def load_eks_nodegroups(
+    neo4j_session: neo4j.Session, nodegroup_data: Dict, region: str, current_aws_account_id: str,
+    aws_update_tag: int,
+) -> None:
+    query: str = """
+    MERGE (nodegroup:EKSNodeGroup{arn: {GroupArn}})
+    ON CREATE SET nodegroup.firstseen = timestamp(),
+                nodegroup.arn = {GroupArn},
+                nodegroup.name = {GroupName},
+                nodegroup.cluster_name = {ClusterName},
+                nodegroup.region = {Region},
+                nodegroup.created_at = {GroupCreatedAt}
+    SET nodegroup.lastupdated = {aws_update_tag},
+        nodegroup.version = {GroupVersion},
+        nodegroup.status = {GroupStatus}
+    WITH nodegroup
+    MATCH (owner:AWSAccount{id: {AWS_ACCOUNT_ID}})
+    MERGE (owner)-[r:RESOURCE]->(nodegroup)
+    ON CREATE SET r.firstseen = timestamp()
+    SET r.lastupdated = {aws_update_tag}
+    """
+
+    for nd in nodegroup_data:
+        nodegroup = nodegroup_data[nd]
+        print(nodegroup.get('clusterName'))
+        neo4j_session.run(
+            query,
+            GroupArn=nodegroup['nodegroupArn'],
+            GroupName=nodegroup['nodegroupName'],
+            ClusterName=nodegroup.get('clusterName'),
+            GroupVersion=nodegroup.get('version'),
+            GroupStatus=nodegroup.get('status'),
+            GroupCreatedAt=str(nodegroup.get('createdAt')),
+            Region=region,
+            aws_update_tag=aws_update_tag,
+            AWS_ACCOUNT_ID=current_aws_account_id,
+        )
+
+
 def _process_logging(cluster: Dict) -> bool:
     """
     Parse cluster.logging.clusterLogging to verify if
@@ -106,9 +165,14 @@ def sync(
         clusters: List[Dict] = get_eks_clusters(boto3_session, region)
 
         cluster_data: Dict = {}
+        nodegroup_data: Dict = {}
         for cluster_name in clusters:
+            nodegroups: List[Dict] = get_eks_nodegroups(boto3_session, region, cluster_name)
             cluster_data[cluster_name] = get_eks_describe_cluster(boto3_session, region, cluster_name)
+            for nodegroup_name in nodegroups:
+                nodegroup_data[nodegroup_name] = get_eks_describe_nodegroup(boto3_session, region, cluster_name, nodegroup_name)
 
+        load_eks_nodegroups(neo4j_session, nodegroup_data, region, current_aws_account_id, update_tag)
         load_eks_clusters(neo4j_session, cluster_data, region, current_aws_account_id, update_tag)
 
-    cleanup(neo4j_session, common_job_parameters)
+    #cleanup(neo4j_session, common_job_parameters)

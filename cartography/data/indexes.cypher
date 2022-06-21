@@ -68,6 +68,7 @@ CREATE INDEX ON :ECRRepositoryImage(uri);
 CREATE INDEX ON :ECRRepositoryImage(tag);
 CREATE INDEX ON :ECRScanFinding(id);
 CREATE INDEX ON :EKSCluster(id);
+CREATE INDEX ON :EKSNodeGroups(id);
 CREATE INDEX ON :ElasticacheCluster(id);
 CREATE INDEX ON :ElasticacheCluster(arn);
 CREATE INDEX ON :ElasticIPAddress(id);
